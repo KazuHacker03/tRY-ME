@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Harold - Secure Terminal</title>
+  <link rel="stylesheet" href="main.css">
+</head>
+<body>
+  <div class="grid-bg"></div>
+  <div class="scanline"></div>
+  <canvas id="matrix" class="hidden"></canvas>
+
+  <!-- ===== LOGIN VIEW ===== -->
+  <div id="view-login" class="view hidden">
+    <main class="wrapper">
+      <div class="robot-area">
+        <div class="speech"><span class="typed">Welcome.</span></div>
+        <div class="robot">
+          <div class="antenna"><div class="ball"></div></div>
+          <div class="head">
+            <div class="visor">
+              <span class="eye"></span>
+              <span class="eye"></span>
+            </div>
+            <div class="mouth"></div>
+          </div>
+          <div class="body">
+            <div class="core"></div>
+            <div class="arm left"></div>
+            <div class="arm right"></div>
+          </div>
+        </div>
+      </div>
+
+      <section class="panel">
+        <h1 class="glitch" data-text="SECURE LOGIN">SECURE LOGIN</h1>
+        <p class="sub">// AUTHORIZED PERSONNEL ONLY</p>
+
+        <p class="error hidden" id="login-error"></p>
+
+        <form id="login-form" autocomplete="off">
+          <label>&gt; USERNAME</label>
+          <input type="text" name="username" required autofocus>
+
+          <label>&gt; PASSWORD</label>
+          <input type="password" name="password" required>
+
+          <button type="submit">ACCESS SYSTEM</button>
+        </form>
+
+        <a href="#signup" class="signup-btn">CREATE NEW IDENTITY</a>
+        <p class="footer">ENCRYPTED CONNECTION // v1.0</p>
+      </section>
+    </main>
+  </div>
+
+  <!-- ===== SIGNUP VIEW ===== -->
+  <div id="view-signup" class="view hidden">
+    <main class="wrapper">
+      <section class="panel" id="signup-panel">
+        <h1 class="glitch" data-text="NEW IDENTITY">NEW IDENTITY</h1>
+        <p class="sub">// CREATE SECURE ACCOUNT</p>
+
+        <p class="error hidden" id="signup-error"></p>
+        <p class="success hidden" id="signup-success"></p>
+
+        <form id="signup-form" autocomplete="off">
+          <label>&gt; USERNAME</label>
+          <input type="text" name="username" required autofocus>
+
+          <label>&gt; PASSWORD</label>
+          <input type="password" name="password" required>
+
+          <label>&gt; RE-ENTER PASSWORD</label>
+          <input type="password" name="confirm" required>
+
+          <button type="submit">CREATE ACCOUNT</button>
+        </form>
+
+        <p class="footer">ALREADY REGISTERED? <a href="#login">LOGIN</a></p>
+      </section>
+    </main>
+  </div>
+
+  <!-- ===== DASHBOARD VIEW ===== -->
+  <div id="view-dashboard" class="view hidden">
+    <main class="terminal">
+      <div class="term-header">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+        <span class="term-title">root@harold:~# secure_shell</span>
+        <button class="logout-btn" id="logout-btn" type="button">TERMINATE SESSION</button>
+      </div>
+
+      <div class="term-body">
+        <div id="boot-log"></div>
+
+        <div id="main-menu" class="hidden">
+          <p class="line">
+            <span class="prompt" id="user-prompt">[USER@harold ~]$</span>
+            <span>access granted. select a module:</span>
+          </p>
+
+          <ul class="menu">
+            <li><a data-cmd="scan">1. NETWORK SCAN</a></li>
+            <li><a data-cmd="decrypt">2. DECRYPT VAULT</a></li>
+            <li><a data-cmd="trace">3. TRACE ROUTE</a></li>
+            <li><a data-cmd="logs">4. VIEW SYSTEM LOGS</a></li>
+            <li><a data-cmd="logout" class="danger">5. TERMINATE SESSION</a></li>
+          </ul>
+
+          <div class="output" id="output"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    (function () {
+      // ---------- Config ----------
+      const USERS_KEY   = "harold_users";
+      const SESSION_KEY = "harold_session";
+
+      // ---------- Helpers ----------
+      const $ = (sel) => document.querySelector(sel);
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      function getUsers() {
+        try { return JSON.parse(localStorage.getItem(USERS_KEY)) || {}; }
+        catch { return {}; }
+      }
+      function saveUsers(users) {
+        localStorage.setItem(USERS_KEY, JSON.stringify(users));
+      }
+
+      // SHA-256 hash via Web Crypto (GitHub Pages is HTTPS, so this is available).
+      async function hashPassword(password) {
+        const data = new TextEncoder().encode(password);
+        const buf = await crypto.subtle.digest("SHA-256", data);
+        return Array.from(new Uint8Array(buf))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+      }
+
+      function showError(el, msg) {
+        el.textContent = msg;
+        el.classList.remove("hidden");
+      }
+      function hideEl(el) {
+        el.textContent = "";
+        el.classList.add("hidden");
+      }
+
+      // ---------- Views ----------
+      const views = {
+        login: $("#view-login"),
+        signup: $("#view-signup"),
+        dashboard: $("#view-dashboard"),
+      };
+
+      function showView(name) {
+        Object.values(views).forEach((v) => v.classList.add("hidden"));
+        views[name].classList.remove("hidden");
+        document.body.style.overflow = name === "dashboard" ? "hidden" : "";
+        $("#matrix").classList.toggle("hidden", name !== "dashboard");
+        if (name === "dashboard") startMatrix();
+        else stopMatrix();
+      }
+
+      function route() {
+        const session = getSession();
+        const hash = location.hash;
+
+        if (session) {
+          if (views.dashboard.classList.contains("hidden")) {
+            showView("dashboard");
+            startBoot(session.username);
+          }
+          return;
+        }
+
+        if (hash === "#signup") showView("signup");
+        else showView("login");
+      }
+
+      // ---------- Session ----------
+      function getSession() {
+        try { return JSON.parse(localStorage.getItem(SESSION_KEY)); }
+        catch { return null; }
+      }
+      function setSession(username) {
+        localStorage.setItem(SESSION_KEY, JSON.stringify({ username }));
+      }
+      function clearSession() {
+        localStorage.removeItem(SESSION_KEY);
+      }
+
+      // ---------- Login ----------
+      $("#login-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const errEl = $("#login-error");
+        hideEl(errEl);
+
+        const username = form.username.value.trim();
+        const password = form.password.value;
+        const users = getUsers();
+        const user = users[username];
+
+        if (!user || user.hash !== (await hashPassword(password))) {
+          showError(errEl, "ACCESS DENIED: Invalid credentials.");
+          const panel = form.closest(".panel");
+          panel.classList.remove("shake");
+          void panel.offsetWidth; // restart animation
+          panel.classList.add("shake");
+          return;
+        }
+
+        setSession(username);
+        form.reset();
+        location.hash = "";
+        showView("dashboard");
+        startBoot(username);
+      });
+
+      // ---------- Signup ----------
+      $("#signup-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const errEl = $("#signup-error");
+        const okEl = $("#signup-success");
+        hideEl(errEl);
+        hideEl(okEl);
+
+        const username = form.username.value.trim();
+        const password = form.password.value;
+        const confirm = form.confirm.value;
+
+        if (!username || !password || !confirm) {
+          return showError(errEl, "ALL FIELDS ARE REQUIRED.");
+        }
+        if (!/^[A-Za-z0-9_]{3,50}$/.test(username)) {
+          return showError(errEl, "USERNAME: 3-50 LETTERS, NUMBERS OR _ ONLY.");
+        }
+        if (password.length < 6) {
+          return showError(errEl, "PASSWORD MUST BE AT LEAST 6 CHARACTERS.");
+        }
+        if (password !== confirm) {
+          return showError(errEl, "PASSWORDS DO NOT MATCH.");
+        }
+
+        const users = getUsers();
+        if (users[username]) {
+          return showError(errEl, "USERNAME ALREADY TAKEN.");
+        }
+
+        // Scan animation, then store the account
+        const overlay = $("#scan-overlay");
+        const log = $("#scan-log");
+        overlay.classList.add("active");
+        log.textContent = "";
+
+        const lines = [
+          "> INITIALIZING UPLINK...",
+          "> BYPASSING FIREWALL...",
+          "> SCANNING IDENTITY DATABASE...",
+          "> VERIFYING CREDENTIALS...",
+        ];
+        for (const line of lines) {
+          log.textContent += line + "\n";
+          await sleep(350);
+        }
+
+        users[username] = { hash: await hashPassword(password), created_at: new Date().toISOString() };
+        saveUsers(users);
+        await sleep(200);
+        overlay.classList.remove("active");
+
+        form.reset();
+        showStamp("granted", "ACCESS CONFIRMED");
+        showError(okEl, "IDENTITY CREATED. You can now log in.");
+        okEl.classList.remove("error");
+        okEl.classList.add("success");
+        okEl.classList.remove("hidden");
+      });
+
+      // ---------- Stamp ----------
+      function showStamp(kind, text) {
+        const stamp = document.createElement("div");
+        stamp.className = "stamp " + kind;
+        stamp.textContent = text;
+        document.body.appendChild(stamp);
+        requestAnimationFrame(() => stamp.classList.add("show"));
+        setTimeout(() => stamp.classList.add("fade"), 2200);
+        setTimeout(() => stamp.remove(), 2900);
+      }
+
+      // ---------- Logout ----------
+      function logout() {
+        clearSession();
+        stopMatrix();
+        $("#boot-log").innerHTML = "";
+        $("#output").textContent = "";
+        $("#main-menu").classList.add("hidden");
+        location.hash = "";
+        showView("login");
+      }
+      $("#logout-btn").addEventListener("click", logout);
+
+      // ---------- Matrix rain ----------
+      const canvas = $("#matrix");
+      const ctx = canvas.getContext("2d");
+      const chars = "01アイウエオカキクケコサシスセソタチツテトABCDEF<>/{}[]";
+      let columns = 0, drops = [], matrixTimer = null;
+
+      function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        columns = Math.floor(canvas.width / 16);
+        drops = Array(columns).fill(1);
+      }
+
+      function drawMatrix() {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.08)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#00ff41";
+        ctx.font = "16px monospace";
+        for (let i = 0; i < drops.length; i++) {
+          const text = chars.charAt(Math.floor(Math.random() * chars.length));
+          ctx.fillText(text, i * 16, drops[i] * 16);
+          if (drops[i] * 16 > canvas.height && Math.random() > 0.975) drops[i] = 0;
+          drops[i]++;
+        }
+      }
+
+      function startMatrix() {
+        if (matrixTimer) return;
+        resizeCanvas();
+        matrixTimer = setInterval(drawMatrix, 50);
+      }
+      function stopMatrix() {
+        clearInterval(matrixTimer);
+        matrixTimer = null;
+      }
+      window.addEventListener("resize", () => {
+        if (matrixTimer) resizeCanvas();
+      });
+
+      // ---------- Boot sequence ----------
+      async function typeLine(text, container, speed = 25) {
+        const p = document.createElement("p");
+        p.className = "line";
+        container.appendChild(p);
+        for (const ch of text) {
+          p.textContent += ch;
+          await sleep(speed);
+        }
+      }
+
+      let booting = false;
+      async function startBoot(username) {
+        if (booting) return;
+        booting = true;
+
+        const bootLog = $("#boot-log");
+        const menu = $("#main-menu");
+        const name = username.toUpperCase();
+        bootLog.innerHTML = "";
+        menu.classList.add("hidden");
+        $("#user-prompt").textContent = "[" + name + "@harold ~]$";
+
+        const lines = [
+          "Initializing secure shell...",
+          "Loading kernel modules........ OK",
+          "Establishing encrypted tunnel... OK",
+          "Scanning for intrusions....... CLEAR",
+          "Identity verified: " + name,
+          "Welcome to the system.",
+        ];
+        for (const line of lines) {
+          await typeLine(line, bootLog);
+          await sleep(200);
+        }
+        menu.classList.remove("hidden");
+        booting = false;
+      }
+
+      // ---------- Menu commands ----------
+      const responses = {
+        scan: [
+          "Scanning local network...",
+          "192.168.1.1   ....  ROUTER      [OPEN]",
+          "192.168.1.24  ....  WORKSTATION [SECURE]",
+          "192.168.1.87  ....  UNKNOWN     [WARNING]",
+          "Scan complete. 3 hosts found.",
+        ],
+        decrypt: [
+          "Accessing vault...",
+          "Brute-forcing AES-256 key...",
+          "Progress: [##########..........] 48%",
+          "Access denied. Vault is locked by admin.",
+        ],
+        trace: [
+          "Tracing route to target...",
+          "hop 1  ->  10.0.0.1      12 ms",
+          "hop 2  ->  172.16.4.9    34 ms",
+          "hop 3  ->  203.0.113.7   58 ms",
+          "Trace complete.",
+        ],
+        logs: () => [
+          "Reading system logs...",
+          "[05:12:01] Login success: " + (getSession()?.username || "unknown"),
+          "[05:13:44] Firewall rule updated",
+          "[05:20:09] No threats detected.",
+        ],
+      };
+
+      async function runCommand(cmd) {
+        const output = $("#output");
+        output.textContent = "";
+        const entry = responses[cmd];
+        const lines = typeof entry === "function" ? entry() : entry || ["Unknown command."];
+        for (const line of lines) {
+          await typeLine(line, output, 15);
+        }
+      }
+
+      $("#main-menu").addEventListener("click", (e) => {
+        const link = e.target.closest("a[data-cmd]");
+        if (!link) return;
+        e.preventDefault();
+        if (link.dataset.cmd === "logout") return logout();
+        runCommand(link.dataset.cmd);
+      });
+
+      // ---------- Init ----------
+      window.addEventListener("hashchange", () => {
+        if (!getSession()) route();
+      });
+      route();
+    })();
+  </script>
+</body>
+</html>
